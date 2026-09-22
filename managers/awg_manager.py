@@ -3516,7 +3516,14 @@ AllowedIPs = {allowed_ips}
                     # The official Amnezia client installs AWG 3.x into the
                     # amnezia-awg2 container, so only the config tells 2.0 and 3.x apart.
                     info['header_protection'] = bool(info['awg_params'].get('header_protection_key'))
-                    info['clients_count'] = len(self._get_clients_table(protocol_type))
+                    # Count ALL peers, not only clientsTable rows: peers that
+                    # exist in awg0.conf but not in the table (shown as
+                    # 'External' in the list) are still real connections.
+                    known = {c.get('clientId')
+                             for c in self._get_clients_table(protocol_type)}
+                    conf_peers = self._parse_peers_from_config(protocol_type)
+                    info['clients_count'] = len(known | set(conf_peers))
+                    info['external_count'] = len(set(conf_peers) - known)
                 except Exception as e:
                     info['error'] = str(e)
 
