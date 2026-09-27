@@ -1041,9 +1041,20 @@ def next_protocol_key(protocols: dict, base: str) -> str:
     return protocol_key(base, idx)
 
 
-def protocol_display_name(protocol: str) -> str:
+# The official Amnezia client has no separate AWG 3 container: it installs
+# AWG 3.x into amnezia-awg2 and only the config (HeaderProtectionKey) differs.
+AWG3_IN_AWG2_NAME = 'AmneziaWG 3 (amnezia-awg2)'
+
+
+def is_awg3_in_awg2(protocol: str, header_protection=False) -> bool:
+    return protocol_base(protocol) == 'awg2' and bool(header_protection)
+
+
+def protocol_display_name(protocol: str, header_protection=False) -> str:
     base = protocol_base(protocol)
     idx = protocol_instance(protocol)
+    if is_awg3_in_awg2(protocol, header_protection):
+        return AWG3_IN_AWG2_NAME if idx <= 1 else f'{AWG3_IN_AWG2_NAME} #{idx}'
     names = {
         'awg': 'AmneziaWG',
         'awg2': 'AmneziaWG 2.0',
@@ -1208,10 +1219,12 @@ AWG_CONFIG_KEYS = (
 )
 
 
-def protocol_short_name(protocol: str) -> str:
+def protocol_short_name(protocol: str, header_protection=False) -> str:
     """Short protocol tag for the server name, e.g. `AWG3`."""
     base = protocol_base(protocol)
     idx = protocol_instance(protocol)
+    if is_awg3_in_awg2(protocol, header_protection):
+        base = 'awg3'
     names = {
         'awg': 'AWG',
         'awg2': 'AWG2',
@@ -1233,7 +1246,8 @@ def protocol_short_name(protocol: str) -> str:
 def connection_display_name(server=None, protocol=None) -> str:
     """`<node> <container>`, e.g. `nl-01 AWG3` -- the name the client will show."""
     node = str((server or {}).get('name') or (server or {}).get('host') or '').strip()
-    tag = protocol_short_name(protocol) if protocol else ''
+    record = ((server or {}).get('protocols') or {}).get(protocol) or {} if protocol else {}
+    tag = protocol_short_name(protocol, record.get('header_protection')) if protocol else ''
     return ' '.join(part for part in (node, tag) if part)
 
 
@@ -3281,6 +3295,8 @@ def api_check_server(request: Request, server_id: int):
             merged['base_protocol'] = db_proto.get('base_protocol') or protocol_base(proto)
             merged['instance'] = db_proto.get('instance') or protocol_instance(proto)
             merged['display_name'] = db_proto.get('display_name') or protocol_display_name(proto)
+            if protocol_base(proto) == 'awg2' and 'header_protection' in merged:
+                merged['display_name'] = protocol_display_name(proto, merged['header_protection'])
             merged['container_name'] = db_proto.get('container_name') or protocol_container_name(proto)
             if protocol_base(proto) == 'adguard':
                 for key in ('web_port', 'mode', 'internal_ip', 'expose_web'):
@@ -3353,7 +3369,7 @@ def api_check_server(request: Request, server_id: int):
                         'awg_params': result.get('awg_params', {}),
                         'base_protocol': protocol_base(proto),
                         'instance': protocol_instance(proto),
-                        'display_name': protocol_display_name(proto),
+                        'display_name': protocol_display_name(proto, result.get('header_protection')),
                         'container_name': protocol_container_name(proto),
                     }
                     if protocol_base(proto) == 'adguard':
@@ -3376,6 +3392,13 @@ def api_check_server(request: Request, server_id: int):
                             'obfuscation': result.get('obfuscation'),
                         })
                     changed = True
+                record = server['protocols'][proto]
+                if protocol_base(proto) == 'awg2' and 'header_protection' in result:
+                    header_protection = bool(result['header_protection'])
+                    if bool(record.get('header_protection')) != header_protection:
+                        record['header_protection'] = header_protection
+                        record['display_name'] = protocol_display_name(proto, header_protection)
+                        changed = True
             else:
                 if proto in server['protocols']:
                     if should_preserve_saved_protocol(proto, result, err):

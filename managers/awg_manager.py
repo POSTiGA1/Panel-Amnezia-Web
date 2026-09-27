@@ -3252,6 +3252,9 @@ AllowedIPs = {allowed_ips}
                             info['port'] = line.split('=')[1].strip()
                             break
                     info['awg_params'] = self._get_awg_params_from_config(protocol_type)
+                    # The official Amnezia client installs AWG 3.x into the
+                    # amnezia-awg2 container, so only the config tells 2.0 and 3.x apart.
+                    info['header_protection'] = bool(info['awg_params'].get('header_protection_key'))
                     info['clients_count'] = len(self._get_clients_table(protocol_type))
                 except Exception as e:
                     info['error'] = str(e)
