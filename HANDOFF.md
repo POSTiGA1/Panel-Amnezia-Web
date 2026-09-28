@@ -10,7 +10,7 @@
 
 ## Среда
 - `origin` = форк `leonidorlov-hash/Amnezia-Web-Panel` (пушим сюда), `upstream` = `PRVTPRO/Amnezia-Web-Panel`.
-- Прод-ветка пользователя: `deploy/v160` (на серверах SERVERA и др.).
+- Прод-ветка: `deploy/v170` (с 28.09; ранее deploy/v160) — панель на SERVERA и др. Ремоты на SERVERA: origin=апстрим, fork=форк.
 - identity уже стоит локально в репо (user.name/email leonidorlov-hash).
 - Тесты: `venv/Scripts/python.exe -m unittest discover -s tests` (277 тестов на deploy, 1 skip = playwright; на ветках от upstream/main ~271 — меньше, т.к. там нет части наших тестов).
 - GitHub API токен: `$(printf "protocol=https\nhost=github.com\n\n" | git credential fill | grep '^password=' | cut -d= -f2)`. MCP github тоже жив.
@@ -41,7 +41,7 @@
 - `b869f15` — настраиваемый ssh_cooldown_base (→ #174)
 - `0b20cfc` — silent refresh после привязки/отвязки (→ #172)
 - `d8b8240` — апгрейд устаревшего kernel-модуля (→ #175)
-HANDOFF.md не коммитить (в .git/info/exclude).
+- HANDOFF.md коммитится в репо (протокол синхронизации чатов — в шапке файла).
 
 ## Kernel-модуль AmneziaWG 3.1.20260812 (14.09, закрыто)
 - Установлен/обновлён вручную через DKMS на NATA (1.0.20260611→3.1), EUROBYTE (→3.1), FIRSTBYTE (1.0.20251009→3.1). Контейнеры перезапущены, старые версии dkms-remove'нуты.
@@ -63,7 +63,7 @@ HANDOFF.md не коммитить (в .git/info/exclude).
 - Из панели серверы опрашиваются по ssh: SERVERA локален; у остальных порт из data.json `ssh_port` (не путать: `s.get('port',22)` в ad-hoc скриптах — дефолт, а не реальность).
 
 ## Серверы пользователя
-- SERVERA = root@stockholmservera (<IP:SERVERA>), панель `/root/Amnezia-Web-Panel`, обновление: `cd /root/Amnezia-Web-Panel && git pull --ff-only && systemctl restart amnezia-panel`
+- SERVERA = root@stockholmservera (<IP:SERVERA>), панель `/root/Amnezia-Web-Panel`, обновление: `cd /root/Amnezia-Web-Panel && git fetch fork && git reset --hard fork/deploy/v170 && systemctl restart amnezia-panel` (на SERVERA origin=апстрим, fork=форк)
 - OVH = debian@vps-c27e7981, `/home/debian/Amnezia-Web-Panel`, systemctl через sudo
 - NATA = <IP:NATA>, ssh :1803 (веб-консоль у хостера есть)
 - MAMKAM — панель удалена 2026-09-07 (управляется через SERVERA)
@@ -291,3 +291,10 @@ HANDOFF.md не коммитить (в .git/info/exclude).
 - IP-адреса серверов вычищены (f8bd0f6 / 1128fa3): заменены на <IP:NATA>, <IP:SERVERA> и т.п.; имена серверов оставлены по решению владельца. ВНИМАНИЕ: IP остались в git-истории веток (полная зачистка = перепись истории, сломает ветку PR #195 — отложено до мержа).
 - Паролей/ключей в HANDOFF нет и не должно появляться — правило навсегда: в файл пишем без секретов.
 - Добавлен CHAT-RULES.md (короткая версия правил для соседних чатов) в обе ветки. HANDOFF растёт — периодически сливать старые записи в HANDOFF-ARCHIVE.md, чтобы чтение не жрало токены.
+
+## 28.09 22:55 — Чат 22:42 введён в курс; запись 21:45 ОТМЕНЁНА
+- Пользователь подтвердил: переход SERVERA на deploy/v170 28.09 — осознанный (апстрим v1.7.0). Запись 21:45 ниже («аномалия v170, откат на v160») — ОТМЕНЯЕТСЯ, исторический слепок ошибочного вывода. Факты про состав v170 на 19:51 верны, вывод неверен: автор 1.7.0 смержил наши #177/#178/#185 + чужие + security-пакет; «недостающие патчи» из v160 — это в основном открытые PR #163–#175/#196, а не потерянная работа.
+- Текущий прод: fork/deploy/v170, HEAD ee9dbf2 = v1.7.0 + 4 наших фикса (стопнутый контейнер, счётчик External, фантомная карточка b80a025, порог 900). SERVERA обновлён (см. 21:50), git pull --ff-only там работает штатно.
+- Будущее обновление SERVERA: git fetch fork && git reset --hard fork/deploy/v170 && systemctl restart amnezia-panel.
+- Постоянные правила из чата 22:42 приняты (дублируют шапку + CHAT-RULES.md): читать HANDOFF целиком + git fetch/log перед работой; писать и коммитить сюда после каждой итерации; пушить сразу; без паролей/IP в файле; команды серверам — по одной, выполняет пользователь; перед записью git pull --ff-only.
+- Заодно исправлены устаревшие строки: прод-ветка = deploy/v170, заметка «HANDOFF не коммитить» удалена, команда обновления SERVERA — под ремоты origin=апстрим/fork=форк.
