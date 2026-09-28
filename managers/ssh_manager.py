@@ -64,27 +64,42 @@ class SSHManager:
 
     def connect(self):
         """Establish SSH connection to the server."""
-        with self._conn_lock:
-            self._disconnect_locked()
-            # One retry on TCP connect timeout: links with random SYN loss
-            # (e.g. transcontinental/DPI-filtered routes) drop ~half of the
-            # first attempts while the retry succeeds in milliseconds.
-            last_exc = None
-            for attempt in (1, 2):
-                try:
-                    self._connect_once()
-                    last_exc = None
-                    break
-                except (TimeoutError, OSError) as e:
-                    last_exc = e
-                    logger.warning(
-                        f"SSH connect to {self.host} attempt {attempt} "
-                        f"failed: {e}")
-                    self._disconnect_locked()
-            if last_exc is not None:
-                self._record_connect_failure()
-                raise last_exc
-            self._reset_connect_failures()
+        # Legacy endpoints still call connect() after get_ssh() has returned a
+        # pooled manager.  Reconnecting there used to close the shared
+        # transport underneath another request (stats/background checks),
+        # producing "Unable to open channel" bursts and hanging service checks.
+        # Use the same lock as command execution and make a live pooled
+        # connection idempotent.
+        with self._exec_lock:
+            with self._conn_lock:
+                if self.pooled:
+                    try:
+                        transport = self.client.get_transport() if self.client else None
+                        if transport and transport.is_active():
+                            return True
+                    except Exception:
+                        pass
+
+                self._disconnect_locked()
+                # One retry on TCP connect timeout: links with random SYN loss
+                # (e.g. transcontinental/DPI-filtered routes) drop ~half of the
+                # first attempts while the retry succeeds in milliseconds.
+                last_exc = None
+                for attempt in (1, 2):
+                    try:
+                        self._connect_once()
+                        last_exc = None
+                        break
+                    except (TimeoutError, OSError) as e:
+                        last_exc = e
+                        logger.warning(
+                            f"SSH connect to {self.host} attempt {attempt} "
+                            f"failed: {e}")
+                        self._disconnect_locked()
+                if last_exc is not None:
+                    self._record_connect_failure()
+                    raise last_exc
+                self._reset_connect_failures()
         return True
 
     def _record_connect_failure(self):
