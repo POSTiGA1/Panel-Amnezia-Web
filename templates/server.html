@@ -1306,6 +1306,8 @@
     const AWG3_IN_AWG2 = {
         {%- for proto, info in (server.get('protocols') or {}).items() if info.get('header_protection') %}
         {{ proto|tojson }}: true,
+        {%- endfor %}
+    };
     // Per-instance public address. Absent = the instance is reached at the
     // server's own address and its listen port.
     const PUBLIC_ENDPOINTS = {
