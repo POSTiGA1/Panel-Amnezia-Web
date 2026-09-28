@@ -738,7 +738,8 @@
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">{{ _('awg_mtu') }}</label>
-                        <input class="form-input" type="number" id="installAwgMtu" value="1376" min="576" max="65535">
+                        <input class="form-input" type="number" id="installAwgMtu" min="576" max="65535"
+                               placeholder="{{ _('awg_mtu_auto') }}">
                         <div class="form-hint">{{ _('awg_mtu_hint') }}</div>
                     </div>
                     <div class="form-group">
@@ -921,9 +922,11 @@
         <div class="form-row">
             <div class="form-group">
                 <label class="form-label">{{ _('awg_mtu') }}</label>
-                <input class="form-input" type="number" id="awgSetMtu" min="576" max="65535">
+                <input class="form-input" type="number" id="awgSetMtu" min="576" max="65535"
+                       oninput="updateAwgMtuSafeHint()">
                 <div class="form-hint">{{ _('awg_mtu_hint') }}</div>
                 <div class="form-hint hidden" id="awgSetMtuExitHint"></div>
+                <div class="form-hint hidden" id="awgSetMtuSafeHint"></div>
             </div>
             <div class="form-group">
                 <label class="form-label">DNS 1</label>
@@ -2618,7 +2621,10 @@
             awgOpts.style.display = 'block';
             // AWG Legacy predates the special junk packets, only MTU/DNS apply.
             document.getElementById('installAwgJunk').style.display = base === 'awg_legacy' ? 'none' : '';
-            document.getElementById('installAwgMtu').value = '1376';
+            // Left blank on purpose: the backend sizes the MTU against the
+            // obfuscation it is about to generate. 1376 predates
+            // ContentPaddingAddition and overflows a 1500-byte link on 3.x.
+            document.getElementById('installAwgMtu').value = '';
             document.getElementById('installAwgDns1').value = '1.1.1.1';
             document.getElementById('installAwgDns2').value = '1.0.0.1';
             document.getElementById('installAwgDns6').value = '2606:4700:4700::1111';
@@ -2941,6 +2947,27 @@
         }
     }
 
+    // Worst-case packet = MTU + IP/UDP/WireGuard headers + per-packet
+    // obfuscation. ContentPaddingAddition is a range, so an oversized tunnel
+    // only drops the packets that draw its upper end: small requests work,
+    // bulk transfers stall. Warn before that is shipped to clients.
+    let awgSafeMtu = 0;
+    let awgTransportOverhead = 0;
+
+    function updateAwgMtuSafeHint() {
+        const hint = document.getElementById('awgSetMtuSafeHint');
+        if (!hint) return;
+        const mtu = Number(document.getElementById('awgSetMtu').value.trim());
+        const unsafe = awgSafeMtu > 0 && mtu > awgSafeMtu;
+        hint.classList.toggle('hidden', !unsafe);
+        if (unsafe) {
+            hint.textContent = _('awg_mtu_unsafe')
+                .replace('{overhead}', awgTransportOverhead)
+                .replace('{safe}', awgSafeMtu);
+            hint.style.color = 'var(--danger, #f87171)';
+        }
+    }
+
     // ========== SOCKS5 Settings ==========
     async function openAwgSettings(proto) {
         currentAwgProto = proto;
@@ -2958,6 +2985,9 @@
                 exitHint.textContent = _('awg_mtu_exit_hint').replace('{exit_mtu}', data.exit_mtu);
                 exitHint.style.color = over ? 'var(--danger, #f87171)' : '';
             }
+            awgSafeMtu = Number(data.safe_mtu || 0);
+            awgTransportOverhead = Number(data.transport_overhead || 0);
+            updateAwgMtuSafeHint();
             const junkGroup = document.getElementById('awgSetJunkGroup');
             junkGroup.style.display = data.supports_special_junk ? '' : 'none';
             SPECIAL_JUNK_KEYS.forEach(key => {

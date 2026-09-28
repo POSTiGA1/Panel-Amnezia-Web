@@ -113,6 +113,19 @@ EXIT_KEY = f'{EXIT_DIR}/exit_private.key'
 EXIT_IFACE = 'exit0'
 EXIT_TABLE = 200
 EXIT_MTU = 1420
+
+# Every AWG data packet on the wire is the client payload plus 20 (IPv4)
+# + 8 (UDP) + 32 (WireGuard transport header), and on top of that whatever
+# the obfuscation appends to *each* packet: S4 always, and on 3.x a random
+# ContentPaddingAddition. Junk packets (Jc/Jmin/Jmax) and the handshake
+# sizes (S1-S3) travel in their own packets and do not count here.
+WG_TRANSPORT_OVERHEAD = 60
+# Ethernet without jumbo frames. Hosts that tunnel customer traffic hand
+# out less (1456 and 1400 are both common); the AWG settings let an
+# operator dial the client MTU down to whatever their uplink really is.
+DEFAULT_LINK_MTU = 1500
+# RFC 8200 floor - never propose a client MTU below this.
+MIN_CLIENT_MTU = 1280
 EXIT_HANDSHAKE_UP_SECONDS = 300  # REJECT_AFTER_TIME (180) + keepalive slack; 180 itself flaps on idle links
 DNS_NET = '172.29.172.0/24'      # amnezia-dns-net: AmneziaDNS / AdGuard live here, reached via eth1
 ENTRY_PRIVATE_KEY_PLACEHOLDER = '__ENTRY_PRIVATE_KEY__'
@@ -259,6 +272,44 @@ def generate_wg_keypair():
 def generate_psk():
     """Generate a WireGuard preshared key."""
     return b64encode(secrets.token_bytes(32)).decode()
+
+
+def _param_max(value):
+    """Largest value a parameter can take, for plain numbers and "min-max" ranges.
+
+    Returns 0 for anything unparseable so a malformed config degrades into
+    "assume no overhead" instead of raising while generating a client config.
+    """
+    text = str(value or '').strip()
+    if not text:
+        return 0
+    try:
+        return max(int(part) for part in text.split('-') if part.strip())
+    except ValueError:
+        return 0
+
+
+def transport_overhead(awg_params):
+    """Bytes added to every data packet on top of the client payload."""
+    params = awg_params or {}
+    return (WG_TRANSPORT_OVERHEAD
+            + _param_max(params.get('transport_packet_junk_size'))
+            + _param_max(params.get('content_padding_addition')))
+
+
+def safe_client_mtu(awg_params, link_mtu=DEFAULT_LINK_MTU):
+    """Largest client MTU whose worst-case data packet still fits the link.
+
+    ContentPaddingAddition is a range, so the oversized packets are only the
+    ones that happen to draw its upper end: the tunnel looks healthy, small
+    requests succeed, and bulk transfers stall. Sizing against the maximum is
+    what keeps that from happening.
+    """
+    try:
+        link = int(link_mtu)
+    except (TypeError, ValueError):
+        link = DEFAULT_LINK_MTU
+    return max(MIN_CLIENT_MTU, link - transport_overhead(awg_params))
 
 
 def generate_awg_params(use_ranges=False, awg3=False):
@@ -990,7 +1041,10 @@ done
                 awg_params.pop(key, None)
             awg_params.update(normalize_special_junk(special_junk))
 
-        mtu = str(mtu or AWG_DEFAULTS['mtu']).strip()
+        # An explicit MTU from the UI wins. Otherwise derive one from the
+        # obfuscation actually in use: AWG_DEFAULTS['mtu'] (1376) predates
+        # ContentPaddingAddition and overflows a 1500-byte link on 3.x.
+        mtu = str(mtu or safe_client_mtu(awg_params)).strip()
         dns = (dns or '').strip() or self._default_dns()
 
         container_name = self._container_name(protocol_type)
@@ -3088,6 +3142,10 @@ AllowedIPs = {allowed_ips}
             # an instance behind an exit link cannot carry more than the link
             'exit_linked': bool(link_info),
             'exit_mtu': EXIT_MTU,
+            # What the current obfuscation costs per packet, so the UI can
+            # flag an MTU that cannot fit a standard 1500-byte link.
+            'safe_mtu': safe_client_mtu(params),
+            'transport_overhead': transport_overhead(params),
         }
         for key in SPECIAL_JUNK_KEYS:
             settings[key] = params.get(key, '')

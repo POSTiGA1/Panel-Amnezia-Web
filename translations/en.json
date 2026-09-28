@@ -72,6 +72,8 @@
   "awg3_desc": "Builds on 2.0 with header protection and content padding. Handshake and rekey timings are randomized, leaving no fixed timing signature.",
   "awg_mtu": "MTU",
   "awg_mtu_hint": "Goes into generated client configs. Amnezia's own clients use 1376.",
+  "awg_mtu_auto": "Auto",
+  "awg_mtu_unsafe": "This MTU plus {overhead} bytes of per-packet obfuscation exceeds a standard 1500-byte link, so the largest packets are dropped. Use {safe} or lower.",
   "awg_settings_btn": "AWG",
   "awg_settings_title": "AmneziaWG settings",
   "awg_settings_desc": "Applied to configs generated from now on. Clients that already imported a config keep their old values until they import it again.",

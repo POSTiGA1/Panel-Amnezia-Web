@@ -72,6 +72,8 @@
   "awg3_desc": "在 2.0 混淆的基础上增加头部保护和内容填充。握手与密钥轮换的时间随机化，不留固定的时间特征。",
   "awg_mtu": "MTU",
   "awg_mtu_hint": "写入生成的客户端配置。Amnezia 官方客户端使用 1376。",
+  "awg_mtu_auto": "自动",
+  "awg_mtu_unsafe": "该 MTU 加上每个数据包 {overhead} 字节的混淆开销超过标准 1500 字节链路，最大的数据包会被丢弃。请使用 {safe} 或更小的值。",
   "awg_settings_btn": "AWG",
   "awg_settings_title": "AmneziaWG 设置",
   "awg_settings_desc": "对此后生成的配置生效。已导入配置的客户端在重新导入前仍使用旧值。",

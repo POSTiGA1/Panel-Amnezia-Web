@@ -72,6 +72,8 @@
   "awg3_desc": "Complète l'obfuscation 2.0 par la protection des en-têtes et le remplissage des données. Les délais de handshake et de renouvellement des clés sont aléatoires, sans signature temporelle fixe.",
   "awg_mtu": "MTU",
   "awg_mtu_hint": "Utilisé dans les configurations client générées. Les applications Amnezia utilisent 1376.",
+  "awg_mtu_auto": "Auto",
+  "awg_mtu_unsafe": "Ce MTU plus {overhead} octets d'obfuscation par paquet dépasse un lien standard de 1500 octets : les plus gros paquets sont perdus. Utilisez {safe} ou moins.",
   "awg_settings_btn": "AWG",
   "awg_settings_title": "Paramètres AmneziaWG",
   "awg_settings_desc": "S'appliquent aux configurations générées à partir de maintenant. Les clients ayant déjà importé une configuration conservent les anciennes valeurs jusqu'à un nouvel import.",
