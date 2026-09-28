@@ -58,21 +58,21 @@ HANDOFF.md не коммитить (в .git/info/exclude).
 - Остальные серверы (FINN, RAHMET, MAMKAM, MRAK, CloudPark) модуль не обновляли — у них согласованные старые пары, всё работает.
 
 ## Расследование «медленных серверов» (13.09, закрыто)
-- Причина подвисаний с NATA: iptables-лимит `DROP tcp dpt:1803 ctstate NEW limit: above 3/min` на самом NATA. Панель при переподключениях упиралась в лимит. Лечение: на NATA добавлено `iptables -I INPUT 3 -p tcp -s 46.183.21.61 --dport 1803 -m conntrack --ctstate NEW -j ACCEPT` + `netfilter-persistent save`. После — 6/6 OK.
+- Причина подвисаний с NATA: iptables-лимит `DROP tcp dpt:1803 ctstate NEW limit: above 3/min` на самом NATA. Панель при переподключениях упиралась в лимит. Лечение: на NATA добавлено `iptables -I INPUT 3 -p tcp -s <IP:SERVERA> --dport 1803 -m conntrack --ctstate NEW -j ACCEPT` + `netfilter-persistent save`. После — 6/6 OK.
 - Остальные 8 серверов проверены (iptables + legacy + conntrack) — лимитов нет. EB имеет редкие всплески до 4с (сеть провайдера, не фаервол).
 - Из панели серверы опрашиваются по ssh: SERVERA локален; у остальных порт из data.json `ssh_port` (не путать: `s.get('port',22)` в ad-hoc скриптах — дефолт, а не реальность).
 
 ## Серверы пользователя
-- SERVERA = root@stockholmservera (46.183.21.61), панель `/root/Amnezia-Web-Panel`, обновление: `cd /root/Amnezia-Web-Panel && git pull --ff-only && systemctl restart amnezia-panel`
+- SERVERA = root@stockholmservera (<IP:SERVERA>), панель `/root/Amnezia-Web-Panel`, обновление: `cd /root/Amnezia-Web-Panel && git pull --ff-only && systemctl restart amnezia-panel`
 - OVH = debian@vps-c27e7981, `/home/debian/Amnezia-Web-Panel`, systemctl через sudo
-- NATA = 95.81.112.162, ssh :1803 (веб-консоль у хостера есть)
+- NATA = <IP:NATA>, ssh :1803 (веб-консоль у хостера есть)
 - MAMKAM — панель удалена 2026-09-07 (управляется через SERVERA)
-- Прочие: FINN :54645, RAHMET/EUROBYTE/FIRSTBYTE/CloudPark.by/MRAK :1803. Пароли в data.json на SERVERA. Имя сервера 46.30.41.17 = `EUROBYTE` (не EB!).
+- Прочие: FINN :54645, RAHMET/EUROBYTE/FIRSTBYTE/CloudPark.by/MRAK :1803. Пароли в data.json на SERVERA. Имя сервера <IP:EUROBYTE> = `EUROBYTE` (не EB!).
 
 ## Незакрытые вопросы
 - Keepalive 15s — пользователь тестирует на живой панели (на момент записи).
 - Автообновление панелей до новых релизов автора — по запросу пользователя.
-- EUROBYTE (46.30.41.17): редкие всплески SSH-connect до 4с (сеть провайдера, не фаервол) — просто наблюдать.
+- EUROBYTE (<IP:EUROBYTE>): редкие всплески SSH-connect до 4с (сеть провайдера, не фаервол) — просто наблюдать.
 
 ## ПРАВИЛО (установлено 14.09): обновлять этот HANDOFF.md после КАЖДОЙ итерации/действия — инциденты, диагнозы, фиксы, статусы. Не откладывать.
 
@@ -152,7 +152,7 @@ HANDOFF.md не коммитить (в .git/info/exclude).
 - Триггер: UI маркетплейса при недетекте статуса инстанса (флаки SSH) показывает «Установить» вместо «Установить ещё один» → plain install → reinstall-путь. На MINSK статус определился → была кнопка «Install another» → amnezia-awg3-2 → баг не воспроизвёлся.
 - Пакетная проверка всех 8 серверов (data.json ↔ docker ps -a): рассинхрона НИГДЕ нет. Лишние неуправляемые контейнеры: amnezia-wg-easy на FINN/RAHMET/FIRSTBYTE/MRAK (ок).
 - Фикс c544cc3 (deploy): _backup_container_state — docker cp /opt/amnezia/awg → /opt/amnezia/backups/<container>-<ts> перед удалением; сбой бэкапа = warning в логе установки, установку не блокирует. 278 тестов OK.
-- RAHMET сменил IP: 93.170.72.25 → 92.38.48.214 (порт 1803). data.json на SERVERA надо обновить (host). НЕ связано с багом.
+- RAHMET сменил IP: <IP:RAHMET-старый> → <IP:RAHMET> (порт 1803). data.json на SERVERA надо обновить (host). НЕ связано с багом.
 - ОТЛОЖЕНО: (1) bind-mount /opt/amnezia/awg для новых инстансов — настоящая долговечность; (2) авто-restore пиров после переустановки; (3) фикс c544cc3 → апстрим; (4) обновить host RAHMET в data.json.
 
 ## 20.09 ~21:40 — Оптимизация /check (коммит 8fea402, deploy/v160)
