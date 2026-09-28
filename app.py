@@ -49,6 +49,13 @@ from managers.backup_manager import BackupManager
 import telegram_bot as tg_bot
 
 from exit_link_service import ExitLinkError, ExitLinkService
+from mail_service import (
+    DEFAULT_MAIL_SETTINGS,
+    MailError,
+    MailOptions,
+    MailService,
+    merge_mail_settings,
+)
 from pwa import build_manifest
 from connection_service import (
     ConnectionService,
@@ -74,6 +81,7 @@ OPENAPI_TAGS = [
     {"name": "Self-service", "description": "Endpoints called by a regular user for their own data (the /my surface)."},
     {"name": "Sharing", "description": "Public, token-protected configuration sharing for end users — no panel session required."},
     {"name": "Settings", "description": "Panel-wide settings, Telegram bot, Remnawave sync, JSON backup/restore."},
+    {"name": "Email", "description": "SMTP delivery of configs and proxy links — to one user or to every user with an address."},
     {"name": "API Tokens", "description": "Bearer tokens for external integrations. Send the token in `Authorization: Bearer <token>`; tokens have admin-equivalent rights and are tied to the admin user that created them."},
 ]
 
@@ -234,6 +242,9 @@ def load_data():
     settings.setdefault('captcha', {'enabled': False})
     settings.setdefault('exit_nodes', {'default_exit_uid': ''})
     settings.setdefault('telegram', {'token': '', 'enabled': False})
+    mail = settings.setdefault('mail', dict(DEFAULT_MAIL_SETTINGS))
+    for key, value in DEFAULT_MAIL_SETTINGS.items():
+        mail.setdefault(key, value)
     settings.setdefault('ssl', {
         'enabled': False,
         'domain': '',
@@ -1186,6 +1197,50 @@ def _manager_call(manager, method, protocol, *args, **kwargs):
 AWG_PROTOCOLS = ('awg', 'awg2', 'awg3', 'awg_legacy')
 
 
+# A public host is an IP (v4, or v6 in the brackets an endpoint needs to stay
+# readable next to the port) or a DNS name. Anything else -- a scheme, a path,
+# a space, a bare IPv6 -- would be copied verbatim into client configs, where
+# it reads as a valid endpoint and simply never connects.
+PUBLIC_HOST_MAX = 253
+PUBLIC_HOST_RE = re.compile(r'^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9][A-Za-z0-9._-]*)$')
+
+
+def normalize_public_host(value):
+    """Validated public host, or '' when the field is left empty."""
+    host = str(value or '').strip()
+    if not host:
+        return ''
+    if len(host) > PUBLIC_HOST_MAX or not PUBLIC_HOST_RE.match(host):
+        raise ValueError('Public host must be an IP address or a host name')
+    return host
+
+
+def normalize_public_port(value):
+    """Validated public port as a string, or '' when the field is left empty."""
+    port = str(value or '').strip()
+    if not port:
+        return ''
+    if not port.isdigit() or not 1 <= int(port) <= 65535:
+        raise ValueError('Public port must be a number between 1 and 65535')
+    return port
+
+
+def protocol_public_endpoint(server, protocol):
+    """The address clients must dial for one protocol instance: (host, port).
+
+    Both default to what the panel itself uses -- the server address it opens
+    SSH to, and the instance's own listen port (the returned port is None then,
+    so managers keep using it). An instance can live somewhere else: a second
+    IP on the same box, a port forward, a domain name. `public_host` and
+    `public_port` on the instance record carry that, and every config and link
+    handed to a client follows them.
+    """
+    info = (server.get('protocols') or {}).get(protocol) or {}
+    host = str(info.get('public_host') or '').strip() or server.get('host', '')
+    public_port = str(info.get('public_port') or '').strip() or None
+    return host, public_port
+
+
 def join_dns(dns1, dns2):
     """Join the two DNS fields into the `a, b` form used in configs."""
     parts = [str(value).strip() for value in (dns1, dns2) if value and str(value).strip()]
@@ -1570,7 +1625,27 @@ self_service_connections = ConnectionService(
     get_protocol_manager=get_protocol_manager,
     manager_call=_manager_call,
     generate_vpn_link=generate_vpn_link,
+    protocol_public_endpoint=protocol_public_endpoint,
 )
+
+
+mail_svc = MailService(
+    load_data=load_data,
+    get_ssh=get_ssh,
+    get_protocol_manager=get_protocol_manager,
+    manager_call=_manager_call,
+    config_payloads=config_payloads,
+    protocol_display_name=protocol_display_name,
+    protocol_base=protocol_base,
+    translate=_t,
+)
+
+
+def _mail_error_response(exc: MailError, lang: str):
+    """MailError carries a translation key, so the browser gets the message in
+    the admin's language and the machine-readable key next to it."""
+    return JSONResponse({'error': _t(str(exc), lang), 'code': str(exc)},
+                        status_code=exc.status_code)
 
 
 def _exit_manager_factory(ssh):
@@ -1789,12 +1864,13 @@ async def perform_mass_operations(delete_uids: List[str] = None, toggle_uids: Li
             for c_req in ops['create']:
                 proto_info = srv.get('protocols', {}).get(c_req['protocol'], {})
                 port = proto_info.get('port', '55424')
+                pub_host, pub_port = protocol_public_endpoint(srv, c_req['protocol'])
                 manager = get_protocol_manager(ssh, c_req['protocol'])
                 
                 if c_req['protocol'] == 'wireguard':
-                    res = await asyncio.to_thread(manager.add_client, c_req['name'], srv['host'])
+                    res = await asyncio.to_thread(manager.add_client, c_req['name'], pub_host, public_port=pub_port)
                 else:
-                    res = await asyncio.to_thread(_manager_call, manager, 'add_client', c_req['protocol'], c_req['name'], srv['host'], port)
+                    res = await asyncio.to_thread(_manager_call, manager, 'add_client', c_req['protocol'], c_req['name'], pub_host, port, public_port=pub_port)
                 
                 if res.get('client_id'):
                     new_conn = {
@@ -2182,6 +2258,12 @@ class RenameProtocolRequest(BaseModel):
     name: str = ''  # empty = reset to default
 
 
+class PublicEndpointRequest(BaseModel):
+    protocol: str = ''
+    public_host: str = ''  # empty = the server's own address
+    public_port: str = ''  # empty = the instance's listen port
+
+
 class AddConnectionRequest(BaseModel):
     protocol: str = 'awg'
     name: str = 'Connection'
@@ -2300,6 +2382,20 @@ class TelegramSettings(BaseModel):
     enabled: bool = False
 
 
+class MailSettings(BaseModel):
+    enabled: bool = False
+    host: str = ''
+    port: int = Field(587, ge=1, le=65535)
+    security: str = 'starttls'      # none | starttls | ssl
+    username: str = ''
+    # Empty keeps the stored password: the settings page never echoes it back.
+    password: str = ''
+    from_email: str = ''
+    from_name: str = ''
+    reply_to: str = ''
+    timeout_seconds: int = Field(30, ge=5, le=300)
+
+
 class AutoBackupSettings(BaseModel):
     enabled: bool = False
     interval_hours: int = 24
@@ -2348,6 +2444,7 @@ class SaveSettingsRequest(BaseModel):
     auto_backup: AutoBackupSettings = AutoBackupSettings()
     self_service: SelfServiceSettings = SelfServiceSettings()
     exit_nodes: ExitNodesSettings = ExitNodesSettings()
+    mail: MailSettings = MailSettings()
 
 
 class ToggleUserRequest(BaseModel):
@@ -2376,6 +2473,30 @@ class AddUserConnectionRequest(BaseModel):
     telemt_secret: Optional[str] = None
     telemt_ad_tag: Optional[str] = None
     telemt_max_conns: Optional[int] = None
+
+
+class MailSendRequest(BaseModel):
+    include_configs: bool = True
+    include_links: bool = True
+    subject: str = ''
+    message: str = ''
+    # Overrides the address on the user record for this one send.
+    recipient: Optional[str] = None
+
+
+class MailBulkRequest(BaseModel):
+    include_configs: bool = True
+    include_links: bool = True
+    subject: str = ''
+    message: str = ''
+    # None means "every user that has an address".
+    user_ids: Optional[List[str]] = None
+    only_enabled: bool = True
+    skip_without_connections: bool = True
+
+
+class MailTestRequest(BaseModel):
+    recipient: str = ''
 
 
 class CreateApiTokenRequest(BaseModel):
@@ -3353,6 +3474,15 @@ def api_check_server(request: Request, server_id: int):
                 return proto, merge_saved_protocol_status(proto, {}, str(e)), str(e)
 
         protocols_to_check = list(dict.fromkeys(BASE_PROTOCOLS + list(server.get('protocols', {}).keys())))
+        # One batched round trip for all AWG containers (ps snapshot + configs
+        # + clientsTables) instead of 3-5 SSH commands per instance - this is
+        # what made /check take seconds on high-latency servers.
+        try:
+            awg_protos = [p for p in protocols_to_check if protocol_base(p) in AWG_PROTOCOLS]
+            if awg_protos:
+                AWGManager(ssh).prefetch_awg_state(awg_protos)
+        except Exception as e:
+            logger.warning(f"AWG status prefetch failed, falling back to per-instance checks: {e}")
         # Run checks sequentially. Several managers use the same SSH connection;
         # checking them in parallel through one SSH object can produce false
         # negatives and previously caused dynamic AWG instances to be removed.
@@ -3503,6 +3633,13 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
         install_base = protocol_base(install_protocol)
         # A reinstalled entry keeps its exit link and is re-linked below
         previous_link = None
+        # Where an instance is published is a property of the network, not
+        # of this install: reinstalling must not move clients back to the
+        # address the panel happens to manage the box through.
+        previous_record = (server.get('protocols') or {}).get(install_protocol) or {}
+        previous_public = {key: previous_record[key]
+                           for key in ('public_host', 'public_port')
+                           if previous_record.get(key)}
         # Reinstalling an instance is not the same as adding one: an instance a
         # user deliberately left unlinked must not be linked behind their back.
         reinstall = install_protocol in (server.get('protocols') or {})
@@ -3544,7 +3681,9 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
                 port=req.port,
                 tls_emulation=req.tls_emulation if req.tls_emulation is not None else True,
                 tls_domain=req.tls_domain,
-                max_connections=req.max_connections if req.max_connections is not None else 0
+                max_connections=req.max_connections if req.max_connections is not None else 0,
+                public_host=previous_public.get('public_host'),
+                public_port=previous_public.get('public_port'),
             )
         elif install_base == 'xray':
             install_args = ()
@@ -3643,6 +3782,7 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
         proto_record['container_name'] = protocol_container_name(install_protocol)
         if previous_link:
             proto_record['exit_link'] = previous_link
+        proto_record.update(previous_public)
         server['protocols'][install_protocol] = proto_record
         result['protocol'] = install_protocol
         result['base_protocol'] = install_base
@@ -4334,6 +4474,8 @@ def api_container_toggle(request: Request, server_id: int, req: ContainerToggleR
         else:
             ssh.run_sudo_command(f"docker start {container}")
             action = 'started'
+        if hasattr(ssh, 'docker_ps_invalidate'):
+            ssh.docker_ps_invalidate()
         ssh.disconnect()
         return {'status': 'success', 'action': action, 'container': container}
     except Exception as e:
@@ -4399,6 +4541,35 @@ async def api_ssh_cooldown(request: Request, server_id: int):
     data['servers'][server_id]['ssh_cooldown_base'] = seconds
     save_data(data)
     return {'ok': True, 'ssh_cooldown_base': seconds}
+
+
+# Allowed live peer-list refresh intervals (seconds); 0 disables polling.
+PEER_POLL_INTERVALS = (0, 5, 10, 15, 20, 45, 120, 300, 600)
+
+
+@app.post('/api/servers/{server_id}/peer_poll_interval', tags=["Servers"])
+async def api_peer_poll_interval(request: Request, server_id: int):
+    """Set the per-server live peer-list refresh interval (0 = off).
+
+    Polling is opt-in: every poll is a full connections read over SSH, which
+    is cheap on fast servers but painful on slow/flaky ones."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    try:
+        body = await request.json()
+        seconds = int(body.get('seconds', 0))
+    except Exception:
+        return JSONResponse({'error': 'Invalid value'}, status_code=400)
+    if seconds not in PEER_POLL_INTERVALS:
+        return JSONResponse(
+            {'error': 'Value must be one of ' + ','.join(map(str, PEER_POLL_INTERVALS))},
+            status_code=400)
+    data = load_data()
+    if server_id >= len(data['servers']):
+        return JSONResponse({'error': 'Server not found'}, status_code=404)
+    data['servers'][server_id]['peer_poll_interval'] = seconds
+    save_data(data)
+    return {'ok': True, 'peer_poll_interval': seconds}
 
 
 @app.post('/api/servers/{server_id}/host_tuning', tags=["Protocols"])
@@ -4491,6 +4662,67 @@ def api_rename_protocol(request: Request, server_id: int, req: RenameProtocolReq
         return {'status': 'success', 'protocol': proto, 'name': name}
     except Exception as e:
         logger.exception("Error renaming protocol")
+        return JSONResponse({'error': str(e)}, status_code=500)
+
+
+@app.post('/api/servers/{server_id}/protocol/public-endpoint', tags=["Protocols"])
+async def api_set_protocol_public_endpoint(request: Request, server_id: int, req: PublicEndpointRequest):
+    """Set or clear the address clients dial for one protocol instance.
+
+    Both fields are optional and empty means "as before": the server's own
+    address, the instance's listen port. Useful when an instance answers on a
+    second IP of the same box, behind a port forward, or under a domain name.
+    """
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    try:
+        data = load_data()
+        if server_id >= len(data['servers']):
+            return JSONResponse({'error': 'Server not found'}, status_code=404)
+        server = data['servers'][server_id]
+        proto = req.protocol.strip()
+        if proto not in server.get('protocols', {}):
+            return JSONResponse({'error': 'Protocol not found'}, status_code=404)
+        try:
+            host = normalize_public_host(req.public_host)
+            port = normalize_public_port(req.public_port)
+        except ValueError as e:
+            return JSONResponse({'error': str(e)}, status_code=400)
+
+        record = server['protocols'][proto]
+        for key, value in (('public_host', host), ('public_port', port)):
+            if value:
+                record[key] = value
+            else:
+                record.pop(key, None)
+        save_data(data)
+
+        # Telemt composes its own tg:// links from config.toml, so for that
+        # protocol the override reaches clients only after the file on the
+        # server carries it. The record is saved either way: a box that is down
+        # right now must not lose the setting, and the next install re-applies
+        # it.
+        warning = ''
+        if protocol_base(proto) == 'telemt':
+            ssh = None
+            try:
+                pub_host, pub_port = protocol_public_endpoint(server, proto)
+                ssh = await asyncio.to_thread(get_ssh, server)
+                await asyncio.to_thread(ssh.connect)
+                manager = get_protocol_manager(ssh, proto)
+                await asyncio.to_thread(
+                    manager.set_public_endpoint, pub_host, pub_port or record.get('port', '443'))
+            except Exception as e:
+                logger.warning(f"Could not apply the public endpoint to {proto}: {e}")
+                warning = str(e)
+            finally:
+                if ssh is not None:
+                    ssh.disconnect()
+
+        return {'status': 'success', 'protocol': proto,
+                'public_host': host, 'public_port': port, 'warning': warning}
+    except Exception as e:
+        logger.exception("Error setting protocol public endpoint")
         return JSONResponse({'error': str(e)}, status_code=500)
 
 
@@ -4694,13 +4926,14 @@ def api_add_connection(request: Request, server_id: int, req: AddConnectionReque
         server = data['servers'][server_id]
         proto_info = server.get('protocols', {}).get(req.protocol, {})
         port = proto_info.get('port', '55424')
+        pub_host, pub_port = protocol_public_endpoint(server, req.protocol)
         ssh = get_ssh(server)
         ssh.connect()
         manager = get_protocol_manager(ssh, req.protocol)
         
         if protocol_base(req.protocol) == 'telemt':
             result = manager.add_client(
-                req.protocol, req.name, server['host'], port,
+                req.protocol, req.name, pub_host, pub_port or port,
                 telemt_quota=req.telemt_quota,
                 telemt_max_ips=req.telemt_max_ips,
                 telemt_expiry=req.telemt_expiry,
@@ -4709,9 +4942,9 @@ def api_add_connection(request: Request, server_id: int, req: AddConnectionReque
                 max_tcp_conns=req.telemt_max_conns
             )
         elif protocol_base(req.protocol) == 'wireguard':
-            result = manager.add_client(req.name, server['host'])
+            result = manager.add_client(req.name, pub_host, public_port=pub_port)
         else:
-            result = manager.add_client(req.protocol, req.name, server['host'], port)
+            result = manager.add_client(req.protocol, req.name, pub_host, port, public_port=pub_port)
         ssh.disconnect()
 
         if result.get('config'):
@@ -4911,10 +5144,11 @@ def api_get_connection_config(request: Request, server_id: int, req: ConnectionA
             return JSONResponse({'error': 'Client ID is required'}, status_code=400)
         proto_info = server.get('protocols', {}).get(req.protocol, {})
         port = proto_info.get('port', '55424')
+        pub_host, pub_port = protocol_public_endpoint(server, req.protocol)
         ssh = get_ssh(server)
         ssh.connect()
         manager = get_protocol_manager(ssh, req.protocol)
-        config = _manager_call(manager, 'get_client_config', req.protocol, req.client_id, server['host'], port)
+        config = _manager_call(manager, 'get_client_config', req.protocol, req.client_id, pub_host, port, public_port=pub_port)
         ssh.disconnect()
         return {'config': config, **config_payloads(config, server, req.protocol)}
     except Exception as e:
@@ -5053,13 +5287,14 @@ def api_add_user(request: Request, req: AddUserRequest):
                 server = data['servers'][req.server_id]
                 proto_info = server.get('protocols', {}).get(req.protocol, {})
                 port = proto_info.get('port', '55424')
+                pub_host, pub_port = protocol_public_endpoint(server, req.protocol)
                 conn_name = req.connection_name or f"{req.username}_vpn"
                 ssh = get_ssh(server)
                 ssh.connect()
                 manager = get_protocol_manager(ssh, req.protocol)
                 if protocol_base(req.protocol) == 'telemt':
                     conn_result = manager.add_client(
-                        req.protocol, conn_name, server['host'], port,
+                        req.protocol, conn_name, pub_host, pub_port or port,
                         telemt_quota=req.telemt_quota,
                         telemt_max_ips=req.telemt_max_ips,
                         telemt_expiry=req.telemt_expiry,
@@ -5068,7 +5303,7 @@ def api_add_user(request: Request, req: AddUserRequest):
                         max_tcp_conns=req.telemt_max_conns
                     )
                 else:
-                    conn_result = manager.add_client(req.protocol, conn_name, server['host'], port)
+                    conn_result = manager.add_client(req.protocol, conn_name, pub_host, port, public_port=pub_port)
                 ssh.disconnect()
 
                 if conn_result.get('client_id'):
@@ -5241,6 +5476,7 @@ async def api_add_user_connection(request: Request, user_id: str, req: AddUserCo
                 return JSONResponse({'error': _t('peer_already_linked', lang).replace('{}', owner_name)}, status_code=400)
         proto_info = server.get('protocols', {}).get(req.protocol, {})
         port = proto_info.get('port', '55424')
+        pub_host, pub_port = protocol_public_endpoint(server, req.protocol)
         ssh = await asyncio.to_thread(get_ssh, server)
         await asyncio.to_thread(ssh.connect)
         manager = get_protocol_manager(ssh, req.protocol)
@@ -5249,13 +5485,13 @@ async def api_add_user_connection(request: Request, user_id: str, req: AddUserCo
             # Use existing client
             target_client_id = req.client_id
             # Retrieve config for existing client
-            config = await asyncio.to_thread(_manager_call, manager, 'get_client_config', req.protocol, req.client_id, server['host'], port)
+            config = await asyncio.to_thread(_manager_call, manager, 'get_client_config', req.protocol, req.client_id, pub_host, port, public_port=pub_port)
             result = {'client_id': target_client_id, 'config': config}
         else:
             # Create new client
             if protocol_base(req.protocol) == 'telemt':
                 result = await asyncio.to_thread(
-                    manager.add_client, req.protocol, req.name, server['host'], port,
+                    manager.add_client, req.protocol, req.name, pub_host, pub_port or port,
                     telemt_quota=req.telemt_quota,
                     telemt_max_ips=req.telemt_max_ips,
                     telemt_expiry=req.telemt_expiry,
@@ -5264,7 +5500,7 @@ async def api_add_user_connection(request: Request, user_id: str, req: AddUserCo
                     max_tcp_conns=req.telemt_max_conns
                 )
             else:
-                result = await asyncio.to_thread(manager.add_client, req.protocol, req.name, server['host'], port)
+                result = await asyncio.to_thread(manager.add_client, req.protocol, req.name, pub_host, port, public_port=pub_port)
         
         await asyncio.to_thread(ssh.disconnect)
 
@@ -5528,11 +5764,12 @@ def api_share_config(token: str, connection_id: str, request: Request):
         server = data['servers'][sid]
         proto_info = server.get('protocols', {}).get(conn['protocol'], {})
         port = proto_info.get('port', '55424')
+        pub_host, pub_port = protocol_public_endpoint(server, conn['protocol'])
         ssh = get_ssh(server)
         ssh.connect()
         # Use appropriate manager for the protocol
         manager = get_protocol_manager(ssh, conn['protocol'])
-        config = _manager_call(manager, 'get_client_config', conn['protocol'], conn['client_id'], server['host'], port)
+        config = _manager_call(manager, 'get_client_config', conn['protocol'], conn['client_id'], pub_host, port, public_port=pub_port)
         ssh.disconnect()
         return {'config': config, **config_payloads(config, server, conn['protocol'])}
     except Exception as e:
@@ -5559,16 +5796,81 @@ def api_my_connection_config(request: Request, connection_id: str):
         server = data['servers'][sid]
         proto_info = server.get('protocols', {}).get(conn['protocol'], {})
         port = proto_info.get('port', '55424')
+        pub_host, pub_port = protocol_public_endpoint(server, conn['protocol'])
         ssh = get_ssh(server)
         ssh.connect()
         # Use appropriate manager for the protocol (fixes Telemt/Xray not working for users)
         manager = get_protocol_manager(ssh, conn['protocol'])
-        config = _manager_call(manager, 'get_client_config', conn['protocol'], conn['client_id'], server['host'], port)
+        config = _manager_call(manager, 'get_client_config', conn['protocol'], conn['client_id'], pub_host, port, public_port=pub_port)
         ssh.disconnect()
         return {'config': config, **config_payloads(config, server, conn['protocol'])}
     except Exception as e:
         logger.exception("Error getting my connection config")
         return JSONResponse({'error': str(e)}, status_code=500)
+
+
+# ======================== EMAIL DELIVERY (admin) ========================
+
+@app.post('/api/settings/mail/test', tags=["Email"])
+async def api_mail_test(request: Request, req: MailTestRequest):
+    """Send a one-liner through the stored SMTP settings to prove they work."""
+    admin = _check_admin(request)
+    if not admin:
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    lang = request.cookies.get('lang', 'en')
+    recipient = (req.recipient or '').strip() or str(admin.get('email') or '').strip()
+    try:
+        return await asyncio.to_thread(mail_svc.send_test, recipient, lang)
+    except MailError as exc:
+        return _mail_error_response(exc, lang)
+    except Exception as exc:
+        logger.exception("Mail: test send failed")
+        return JSONResponse({'error': str(exc)}, status_code=502)
+
+
+@app.post('/api/users/mail/bulk', tags=["Email"])
+def api_mail_send_bulk(request: Request, req: MailBulkRequest):
+    """Start a mass send. Returns immediately with the initial job state --
+    reading a few hundred configs over SSH takes minutes, far longer than a
+    browser waits, so the run continues in a worker thread and the page polls
+    /api/users/mail/bulk/status."""
+    admin = _check_admin(request)
+    if not admin:
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    lang = request.cookies.get('lang', 'en')
+    try:
+        options = MailOptions.from_dict(req.dict())
+        return mail_svc.start_bulk(options, lang=lang, user_ids=req.user_ids,
+                                   started_by=admin.get('username', ''))
+    except MailError as exc:
+        return _mail_error_response(exc, lang)
+    except Exception as exc:
+        logger.exception("Mail: bulk send failed to start")
+        return JSONResponse({'error': str(exc)}, status_code=500)
+
+
+@app.get('/api/users/mail/bulk/status', tags=["Email"])
+def api_mail_bulk_status(request: Request):
+    """Progress of the current (or last) mass send."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    return mail_svc.bulk_status()
+
+
+@app.post('/api/users/{user_id}/mail/send', tags=["Email"])
+async def api_mail_send_user(request: Request, user_id: str, req: MailSendRequest):
+    """Email one user their configs and/or proxy links."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    lang = request.cookies.get('lang', 'en')
+    try:
+        options = MailOptions.from_dict(req.dict())
+        return await asyncio.to_thread(mail_svc.send_to_user, user_id, options, lang)
+    except MailError as exc:
+        return _mail_error_response(exc, lang)
+    except Exception as exc:
+        logger.exception("Mail: send to user failed")
+        return JSONResponse({'error': str(exc)}, status_code=502)
 
 
 @app.get('/settings', tags=["System Templates"])
@@ -5714,6 +6016,7 @@ def save_settings(request: Request, payload: SaveSettingsRequest):
     settings['captcha'] = payload.captcha.dict()
     settings['telegram'] = payload.telegram.dict()
     settings['ssl'] = payload.ssl.dict()
+    settings['mail'] = merge_mail_settings(settings.get('mail'), payload.mail.dict())
 
     old_auto_backup = settings.get('auto_backup', {}) or {}
     interval_hours = max(1, min(24, int(payload.auto_backup.interval_hours or 24)))

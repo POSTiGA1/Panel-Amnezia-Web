@@ -72,6 +72,8 @@
   "awg3_desc": "Complète l'obfuscation 2.0 par la protection des en-têtes et le remplissage des données. Les délais de handshake et de renouvellement des clés sont aléatoires, sans signature temporelle fixe.",
   "awg_mtu": "MTU",
   "awg_mtu_hint": "Utilisé dans les configurations client générées. Les applications Amnezia utilisent 1376.",
+  "awg_mtu_auto": "Auto",
+  "awg_mtu_unsafe": "Ce MTU plus {overhead} octets d'obfuscation par paquet dépasse un lien standard de 1500 octets : les plus gros paquets sont perdus. Utilisez {safe} ou moins.",
   "awg_settings_btn": "AWG",
   "awg_settings_title": "Paramètres AmneziaWG",
   "awg_settings_desc": "S'appliquent aux configurations générées à partir de maintenant. Les clients ayant déjà importé une configuration conservent les anciennes valeurs jusqu'à un nouvel import.",
@@ -573,5 +575,16 @@
   "stop_peer_title": "Arrêter",
   "start_peer_title": "Activer",
   "ssh_cooldown_title": "SSH cooldown (s)",
-  "ssh_cooldown_hint": "Délai initial avant reconnexion à un serveur injoignable. Ne modifiez pas si le serveur fonctionne correctement."
+  "ssh_cooldown_hint": "Délai initial avant reconnexion à un serveur injoignable. Ne modifiez pas si le serveur fonctionne correctement.",
+  "public_endpoint_title": "Adresse publique",
+  "public_endpoint_for": "Adresse utilisée par les clients de {}",
+  "public_endpoint_host": "Hôte",
+  "public_endpoint_port": "Port",
+  "public_endpoint_port_placeholder": "port de l'instance",
+  "public_endpoint_hint": "Laissez vide pour utiliser l'adresse du serveur et le port de l'instance. Renseignez ces champs si l'instance répond sur une autre IP du même serveur, derrière une redirection de port ou sous un nom de domaine.",
+  "public_endpoint_not_applied": "Enregistré, mais non appliqué sur le serveur",
+  "peer_poll_title": "Actualisation en direct des pairs",
+  "peer_poll_hint": "Fréquence de rafraîchissement automatique de la liste des pairs. 0 = désactivé (par défaut). 5–10 suffit sur les serveurs rapides ; sur les lents, utilisez 300–600 ou laissez désactivé.",
+  "peer_poll_off": "désactivé",
+  "peer_poll_sec": "s"
 }
