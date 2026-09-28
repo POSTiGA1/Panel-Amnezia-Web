@@ -873,6 +873,15 @@ a:hover {
     box-shadow: var(--shadow-lg);
 }
 
+/* An open panel is moved to <body> and placed by searchable-select.js in
+   viewport coordinates (inline left/top/width), so no modal can clip it.
+   Above .modal-backdrop (1000) and below .toast-container (2000). */
+.searchable-select-panel.is-floating {
+    position: fixed;
+    inset: auto;
+    z-index: 1100;
+}
+
 .searchable-select-search {
     margin-bottom: var(--space-sm);
 }
