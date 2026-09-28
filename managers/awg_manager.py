@@ -249,7 +249,10 @@ def normalize_special_junk(values):
     return result
 
 # Connection flood monitoring (P2P/torrent detection)
-CONN_WARN_THRESHOLD = 600    # simultaneous connections per peer that trigger a warning
+# 600 triggers false positives on peers whose OS downloads updates over P2P
+# (Windows Delivery Optimization opens ~500-800 connections), so the bar
+# sits above that range at 900.
+CONN_WARN_THRESHOLD = 900    # simultaneous connections per peer that trigger a warning
 CONN_WARN_COOLDOWN = 3600    # min seconds between two recorded warnings for the same peer
 CONN_WARN_MAX_EVENTS = 5     # how many recent warnings are kept per peer
 
