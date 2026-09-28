@@ -49,6 +49,13 @@ from managers.backup_manager import BackupManager
 import telegram_bot as tg_bot
 
 from exit_link_service import ExitLinkError, ExitLinkService
+from mail_service import (
+    DEFAULT_MAIL_SETTINGS,
+    MailError,
+    MailOptions,
+    MailService,
+    merge_mail_settings,
+)
 from pwa import build_manifest
 from connection_service import (
     ConnectionService,
@@ -74,6 +81,7 @@ OPENAPI_TAGS = [
     {"name": "Self-service", "description": "Endpoints called by a regular user for their own data (the /my surface)."},
     {"name": "Sharing", "description": "Public, token-protected configuration sharing for end users — no panel session required."},
     {"name": "Settings", "description": "Panel-wide settings, Telegram bot, Remnawave sync, JSON backup/restore."},
+    {"name": "Email", "description": "SMTP delivery of configs and proxy links — to one user or to every user with an address."},
     {"name": "API Tokens", "description": "Bearer tokens for external integrations. Send the token in `Authorization: Bearer <token>`; tokens have admin-equivalent rights and are tied to the admin user that created them."},
 ]
 
@@ -234,6 +242,9 @@ def load_data():
     settings.setdefault('captcha', {'enabled': False})
     settings.setdefault('exit_nodes', {'default_exit_uid': ''})
     settings.setdefault('telegram', {'token': '', 'enabled': False})
+    mail = settings.setdefault('mail', dict(DEFAULT_MAIL_SETTINGS))
+    for key, value in DEFAULT_MAIL_SETTINGS.items():
+        mail.setdefault(key, value)
     settings.setdefault('ssl', {
         'enabled': False,
         'domain': '',
@@ -1604,6 +1615,25 @@ self_service_connections = ConnectionService(
 )
 
 
+mail_svc = MailService(
+    load_data=load_data,
+    get_ssh=get_ssh,
+    get_protocol_manager=get_protocol_manager,
+    manager_call=_manager_call,
+    config_payloads=config_payloads,
+    protocol_display_name=protocol_display_name,
+    protocol_base=protocol_base,
+    translate=_t,
+)
+
+
+def _mail_error_response(exc: MailError, lang: str):
+    """MailError carries a translation key, so the browser gets the message in
+    the admin's language and the machine-readable key next to it."""
+    return JSONResponse({'error': _t(str(exc), lang), 'code': str(exc)},
+                        status_code=exc.status_code)
+
+
 def _exit_manager_factory(ssh):
     from managers.exit_manager import ExitManager
     return ExitManager(ssh)
@@ -2338,6 +2368,20 @@ class TelegramSettings(BaseModel):
     enabled: bool = False
 
 
+class MailSettings(BaseModel):
+    enabled: bool = False
+    host: str = ''
+    port: int = Field(587, ge=1, le=65535)
+    security: str = 'starttls'      # none | starttls | ssl
+    username: str = ''
+    # Empty keeps the stored password: the settings page never echoes it back.
+    password: str = ''
+    from_email: str = ''
+    from_name: str = ''
+    reply_to: str = ''
+    timeout_seconds: int = Field(30, ge=5, le=300)
+
+
 class AutoBackupSettings(BaseModel):
     enabled: bool = False
     interval_hours: int = 24
@@ -2386,6 +2430,7 @@ class SaveSettingsRequest(BaseModel):
     auto_backup: AutoBackupSettings = AutoBackupSettings()
     self_service: SelfServiceSettings = SelfServiceSettings()
     exit_nodes: ExitNodesSettings = ExitNodesSettings()
+    mail: MailSettings = MailSettings()
 
 
 class ToggleUserRequest(BaseModel):
@@ -2414,6 +2459,30 @@ class AddUserConnectionRequest(BaseModel):
     telemt_secret: Optional[str] = None
     telemt_ad_tag: Optional[str] = None
     telemt_max_conns: Optional[int] = None
+
+
+class MailSendRequest(BaseModel):
+    include_configs: bool = True
+    include_links: bool = True
+    subject: str = ''
+    message: str = ''
+    # Overrides the address on the user record for this one send.
+    recipient: Optional[str] = None
+
+
+class MailBulkRequest(BaseModel):
+    include_configs: bool = True
+    include_links: bool = True
+    subject: str = ''
+    message: str = ''
+    # None means "every user that has an address".
+    user_ids: Optional[List[str]] = None
+    only_enabled: bool = True
+    skip_without_connections: bool = True
+
+
+class MailTestRequest(BaseModel):
+    recipient: str = ''
 
 
 class CreateApiTokenRequest(BaseModel):
@@ -5706,6 +5775,70 @@ def api_my_connection_config(request: Request, connection_id: str):
         return JSONResponse({'error': str(e)}, status_code=500)
 
 
+# ======================== EMAIL DELIVERY (admin) ========================
+
+@app.post('/api/settings/mail/test', tags=["Email"])
+async def api_mail_test(request: Request, req: MailTestRequest):
+    """Send a one-liner through the stored SMTP settings to prove they work."""
+    admin = _check_admin(request)
+    if not admin:
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    lang = request.cookies.get('lang', 'en')
+    recipient = (req.recipient or '').strip() or str(admin.get('email') or '').strip()
+    try:
+        return await asyncio.to_thread(mail_svc.send_test, recipient, lang)
+    except MailError as exc:
+        return _mail_error_response(exc, lang)
+    except Exception as exc:
+        logger.exception("Mail: test send failed")
+        return JSONResponse({'error': str(exc)}, status_code=502)
+
+
+@app.post('/api/users/mail/bulk', tags=["Email"])
+def api_mail_send_bulk(request: Request, req: MailBulkRequest):
+    """Start a mass send. Returns immediately with the initial job state --
+    reading a few hundred configs over SSH takes minutes, far longer than a
+    browser waits, so the run continues in a worker thread and the page polls
+    /api/users/mail/bulk/status."""
+    admin = _check_admin(request)
+    if not admin:
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    lang = request.cookies.get('lang', 'en')
+    try:
+        options = MailOptions.from_dict(req.dict())
+        return mail_svc.start_bulk(options, lang=lang, user_ids=req.user_ids,
+                                   started_by=admin.get('username', ''))
+    except MailError as exc:
+        return _mail_error_response(exc, lang)
+    except Exception as exc:
+        logger.exception("Mail: bulk send failed to start")
+        return JSONResponse({'error': str(exc)}, status_code=500)
+
+
+@app.get('/api/users/mail/bulk/status', tags=["Email"])
+def api_mail_bulk_status(request: Request):
+    """Progress of the current (or last) mass send."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    return mail_svc.bulk_status()
+
+
+@app.post('/api/users/{user_id}/mail/send', tags=["Email"])
+async def api_mail_send_user(request: Request, user_id: str, req: MailSendRequest):
+    """Email one user their configs and/or proxy links."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    lang = request.cookies.get('lang', 'en')
+    try:
+        options = MailOptions.from_dict(req.dict())
+        return await asyncio.to_thread(mail_svc.send_to_user, user_id, options, lang)
+    except MailError as exc:
+        return _mail_error_response(exc, lang)
+    except Exception as exc:
+        logger.exception("Mail: send to user failed")
+        return JSONResponse({'error': str(exc)}, status_code=502)
+
+
 @app.get('/settings', tags=["System Templates"])
 def settings_page(request: Request):
     user = _check_admin(request)
@@ -5849,6 +5982,7 @@ def save_settings(request: Request, payload: SaveSettingsRequest):
     settings['captcha'] = payload.captcha.dict()
     settings['telegram'] = payload.telegram.dict()
     settings['ssl'] = payload.ssl.dict()
+    settings['mail'] = merge_mail_settings(settings.get('mail'), payload.mail.dict())
 
     old_auto_backup = settings.get('auto_backup', {}) or {}
     interval_hours = max(1, min(24, int(payload.auto_backup.interval_hours or 24)))
