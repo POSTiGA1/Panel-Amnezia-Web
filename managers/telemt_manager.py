@@ -430,8 +430,8 @@ docker compose version
             api_payload['max_tcp_conns'] = val
 
         # Save config to host
-        self.ssh.upload_file_sudo(config_content.replace('\r\n', '\n'), f"{self._config_path()}")
-        
+        self.ssh.upload_file_sudo(config_text.replace('\r\n', '\n'), f"{self._config_path()}")
+
         # 2. Call API for immediate effect
         self._api_request("POST", "/v1/users", data=api_payload)
         
@@ -487,8 +487,8 @@ docker compose version
             api_payload['max_tcp_conns'] = val
 
         # Save config to host
-        self.ssh.upload_file_sudo(config_content.replace('\r\n', '\n'), f"{self._config_path()}")
-        
+        self.ssh.upload_file_sudo(config_text.replace('\r\n', '\n'), f"{self._config_path()}")
+
         # API call
         self._api_request("PATCH", f"/v1/users/{client_id}", data=api_payload)
         return {"status": "success"}
