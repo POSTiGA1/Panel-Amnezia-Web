@@ -235,7 +235,7 @@
     <div class="card card-hover protocol-card protocol-awg" id="proto-awg2">
         <div class="protocol-card-head">
             <div class="protocol-icon"><img src="/static/img/amnezia.svg" alt="AmneziaWG"></div>
-            <div class="protocol-name">AmneziaWG 2.0</div>
+            <div class="protocol-name">{{ 'AmneziaWG 3 (amnezia-awg2)' if ((server.get('protocols') or {}).get('awg2') or {}).get('header_protection') else 'AmneziaWG 2.0' }}</div>
         </div>
         <div class="flex gap-sm protocol-ctrl" id="awg2-ctrl" style="display:none!important;"></div>
         <div class="protocol-desc">
@@ -1302,6 +1302,10 @@
         {{ proto|tojson }}: {{ info.get('custom_name')|tojson }},
         {%- endfor %}
     };
+    // AWG 3.x installed by the official Amnezia client lives in amnezia-awg2.
+    const AWG3_IN_AWG2 = {
+        {%- for proto, info in (server.get('protocols') or {}).items() if info.get('header_protection') %}
+        {{ proto|tojson }}: true,
     // Per-instance public address. Absent = the instance is reached at the
     // server's own address and its listen port.
     const PUBLIC_ENDPOINTS = {
@@ -1704,7 +1708,7 @@
         let title;
         switch (base) {
             case 'awg': title = 'AmneziaWG'; break;
-            case 'awg2': title = 'AmneziaWG 2.0'; break;
+            case 'awg2': title = AWG3_IN_AWG2[proto] ? 'AmneziaWG 3 (amnezia-awg2)' : 'AmneziaWG 2.0'; break;
             case 'awg3': title = 'AmneziaWG 3.1'; break;
             case 'awg_legacy': title = 'AmneziaWG Legacy'; break;
             case 'xray': title = 'Xray'; break;
@@ -2000,6 +2004,15 @@
     function updateProtocolCard(proto, info) {
         ensureProtocolCard(proto);
         const protoKey = protoDomKey(proto);
+        if (protoBase(proto) === 'awg2' && 'header_protection' in info) {
+            if (info.header_protection) AWG3_IN_AWG2[proto] = true; else delete AWG3_IN_AWG2[proto];
+            const nameEl = document.querySelector(`#proto-${protoKey} .protocol-name`);
+            if (nameEl && !CUSTOM_PROTO_NAMES[proto]) {
+                const pencil = nameEl.querySelector('.proto-rename');
+                nameEl.textContent = getProtoTitle(proto);
+                if (pencil) nameEl.appendChild(pencil);
+            }
+        }
         const statusEl = document.getElementById(`${protoKey}-status`);
         const infoEl = document.getElementById(`${protoKey}-info`);
         const infoGrid = document.getElementById(`${protoKey}-info-grid`);
