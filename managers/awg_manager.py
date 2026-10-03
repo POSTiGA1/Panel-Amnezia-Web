@@ -2979,10 +2979,12 @@ AllowedIPs = {allowed_ips}
                     continue
                 config_lines.append(f"{config_key} = {val}")
 
-        # Route ::/0 only when the client actually holds an IPv6 address:
-        # claiming the IPv6 default route on an IPv4-only tunnel blackholes
-        # the client's own native IPv6.
-        peer_allowed_ips = "0.0.0.0/0, ::/0" if client_ipv6 else "0.0.0.0/0"
+        # Always advertise both default routes in the *client* config.
+        # AmneziaVPN treats AllowedIPs without ::/0 as a non-full-tunnel
+        # server and disables split tunneling in the UI (#158/#193).
+        # This does not assign the client an IPv6 address or enable AWG_IPV6;
+        # server-side peer AllowedIPs stay IPv4-only unless client_ipv6 is set.
+        peer_allowed_ips = "0.0.0.0/0, ::/0"
 
         client_config = "[Interface]\n" + "\n".join(config_lines) + f"""
 
@@ -3082,8 +3084,8 @@ PersistentKeepalive = 25
                     continue
                 config_lines.append(f"{config_key} = {val}")
 
-        # See the client-creation path: ::/0 only on dual-stack tunnels.
-        peer_allowed_ips = "0.0.0.0/0, ::/0" if client_ipv6 else "0.0.0.0/0"
+        # See the client-creation path: always include ::/0 for Amnezia split tunneling.
+        peer_allowed_ips = "0.0.0.0/0, ::/0"
 
         config = "[Interface]\n" + "\n".join(config_lines) + f"""
 
